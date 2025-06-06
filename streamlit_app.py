@@ -1,151 +1,233 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import pygame
+import random
+import time
+from pygame.locals import *
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Game constants
+GAME_WIDTH = 700
+GAME_HEIGHT = 700
+SPACE_SIZE = 50
+SPEED = 50
+BODY_PARTS = 3
+SNAKE_COLOR = (0, 255, 0)
+FOOD_COLOR = (255, 0, 0)
+BACKGROUND_COLOR = (0, 0, 0)
+TEXT_COLOR = (255, 255, 255)
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+class Snake:
+    def __init__(self):
+        self.body_size = BODY_PARTS
+        self.coordinates = []
+        self.direction = 'down'
+        
+        for i in range(0, BODY_PARTS):
+            self.coordinates.append([0, 0])
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+class Food:
+    def __init__(self, snake):
+        self.coordinates = self.generate_food(snake)
+        
+    def generate_food(self, snake):
+        while True:
+            x = random.randint(0, (GAME_WIDTH // SPACE_SIZE) - 1) * SPACE_SIZE
+            y = random.randint(0, (GAME_HEIGHT // SPACE_SIZE) - 1) * SPACE_SIZE
+            
+            # Make sure food doesn't spawn on snake
+            if [x, y] not in snake.coordinates:
+                return [x, y]
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+def find_direction(snake, food):
+    """Calculate next direction based on snake and food position"""
+    snake_x, snake_y = snake.coordinates[0]
+    food_x, food_y = food.coordinates
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    possible_directions = []
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+    if snake_x < food_x:
+        possible_directions.append("right")
+    if snake_x > food_x:
+        possible_directions.append("left")
+    if snake_y < food_y:
+        possible_directions.append("down")
+    if snake_y > food_y:
+        possible_directions.append("up")
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+    for direction in possible_directions:
+        if is_safe_direction(snake, direction):
+            return direction
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    for direction in ["up", "down", "left", "right"]:
+        if is_safe_direction(snake, direction):
+            return direction
 
-    return gdp_df
+    return None
 
-gdp_df = get_gdp_data()
+def is_safe_direction(snake, direction):
+    """Check if a direction is safe (won't hit wall or self)"""
+    x, y = snake.coordinates[0]
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    if direction == "up":
+        y -= SPACE_SIZE
+    elif direction == "down":
+        y += SPACE_SIZE
+    elif direction == "left":
+        x -= SPACE_SIZE
+    elif direction == "right":
+        x += SPACE_SIZE
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    # Check wall collision
+    if x < 0 or x >= GAME_WIDTH or y < 0 or y >= GAME_HEIGHT:
+        return False
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+    # Check self collision
+    for body_part in snake.coordinates:
+        if x == body_part[0] and y == body_part[1]:
+            return False
 
-# Add some spacing
-''
-''
+    return True
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+def check_collision(snake):
+    x, y = snake.coordinates[0]
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+    if x < 0 or x >= GAME_WIDTH:
+        return True
+    elif y < 0 or y >= GAME_HEIGHT:
+        return True
 
-countries = gdp_df['Country Code'].unique()
+    for body_part in snake.coordinates[1:]:
+        if x == body_part[0] and y == body_part[1]:
+            return True
 
-if not len(countries):
-    st.warning("Select at least one country")
+    return False
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+def main():
+    st.title("Snake Game")
+    
+    # Initialize game state in session state
+    if 'game_state' not in st.session_state:
+        st.session_state.game_state = {
+            'snake': Snake(),
+            'food': None,
+            'score': 0,
+            'game_over': False,
+            'auto_mode': True,
+            'last_update': 0,
+            'direction': 'down'
+        }
+        st.session_state.game_state['food'] = Food(st.session_state.game_state['snake'])
+    
+    # Create a placeholder for the game
+    game_placeholder = st.empty()
+    
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.Surface((GAME_WIDTH, GAME_HEIGHT))
+    pygame.display.set_caption("Snake Game")
+    
+    # Control buttons
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("Up"):
+            if st.session_state.game_state['direction'] != 'down':
+                st.session_state.game_state['direction'] = 'up'
+    with col2:
+        if st.button("Left"):
+            if st.session_state.game_state['direction'] != 'right':
+                st.session_state.game_state['direction'] = 'left'
+        if st.button("Right"):
+            if st.session_state.game_state['direction'] != 'left':
+                st.session_state.game_state['direction'] = 'right'
+    with col3:
+        if st.button("Down"):
+            if st.session_state.game_state['direction'] != 'up':
+                st.session_state.game_state['direction'] = 'down'
+    
+    # Auto mode toggle
+    st.session_state.game_state['auto_mode'] = st.checkbox("Auto Mode", value=True)
+    
+    # Game loop
+    while not st.session_state.game_state['game_over']:
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        # Only update at the specified speed
+        if current_time - st.session_state.game_state['last_update'] > SPEED:
+            st.session_state.game_state['last_update'] = current_time
+            
+            snake = st.session_state.game_state['snake']
+            food = st.session_state.game_state['food']
+            
+            # Auto mode direction calculation
+            if st.session_state.game_state['auto_mode']:
+                new_direction = find_direction(snake, food)
+                if new_direction is not None:
+                    st.session_state.game_state['direction'] = new_direction
+            
+            # Move snake
+            x, y = snake.coordinates[0]
+            
+            if st.session_state.game_state['direction'] == 'up':
+                y -= SPACE_SIZE
+            elif st.session_state.game_state['direction'] == 'down':
+                y += SPACE_SIZE
+            elif st.session_state.game_state['direction'] == 'left':
+                x -= SPACE_SIZE
+            elif st.session_state.game_state['direction'] == 'right':
+                x += SPACE_SIZE
+            
+            snake.coordinates.insert(0, [x, y])
+            
+            # Check food collision
+            if x == food.coordinates[0] and y == food.coordinates[1]:
+                st.session_state.game_state['score'] += 1
+                st.session_state.game_state['food'] = Food(snake)
+            else:
+                snake.coordinates.pop()
+            
+            # Check collision
+            if check_collision(snake):
+                st.session_state.game_state['game_over'] = True
+                break
+            
+            # Draw everything
+            screen.fill(BACKGROUND_COLOR)
+            
+            # Draw snake
+            for coord in snake.coordinates:
+                pygame.draw.rect(screen, SNAKE_COLOR, 
+                                (coord[0], coord[1], SPACE_SIZE, SPACE_SIZE))
+            
+            # Draw food
+            pygame.draw.rect(screen, FOOD_COLOR, 
+                            (food.coordinates[0], food.coordinates[1], SPACE_SIZE, SPACE_SIZE))
+            
+            # Convert Pygame surface to image and display in Streamlit
+            pygame.image.save(screen, "temp.png")
+            game_placeholder.image("temp.png", caption=f"Score: {st.session_state.game_state['score']}")
+    
+    # Game over display
+    if st.session_state.game_state['game_over']:
+        screen.fill(BACKGROUND_COLOR)
+        font = pygame.font.SysFont('consolas', 70)
+        text = font.render("GAME OVER", True, (255, 0, 0))
+        text_rect = text.get_rect(center=(GAME_WIDTH/2, GAME_HEIGHT/2))
+        screen.blit(text, text_rect)
+        pygame.image.save(screen, "temp.png")
+        game_placeholder.image("temp.png", caption=f"Final Score: {st.session_state.game_state['score']}")
+        
+        if st.button("Play Again"):
+            # Reset game state
+            st.session_state.game_state = {
+                'snake': Snake(),
+                'food': None,
+                'score': 0,
+                'game_over': False,
+                'auto_mode': True,
+                'last_update': 0,
+                'direction': 'down'
+            }
+            st.session_state.game_state['food'] = Food(st.session_state.game_state['snake'])
+            st.rerun()
 
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+if __name__ == "__main__":
+    main()
